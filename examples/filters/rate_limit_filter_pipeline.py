@@ -23,14 +23,8 @@ class Pipeline:
         sliding_window_limit: Optional[int] = None
         sliding_window_minutes: Optional[int] = None
 
-        # Usernames that are exempt from rate limiting (e.g. admins, service accounts)
-        exempt_usernames: List[str] = []
-
-        # Emails that are exempt (use if you log in with OAuth and don't have a username)
+        # Optional: emails that are exempt from rate limiting (e.g. admins). Leave empty for none.
         exempt_emails: List[str] = []
-
-        # User IDs that are exempt (optional; same as user["id"] from Open WebUI, often OAuth id)
-        exempt_user_ids: List[str] = []
 
         # When True, rate limiting applies only on weekdays (Mon–Fri); when False, every day
         weekdays_only: bool = True
@@ -63,18 +57,10 @@ class Pipeline:
                 "sliding_window_minutes": int(
                     os.getenv("RATE_LIMIT_SLIDING_WINDOW_MINUTES", 15)
                 ),
-                "exempt_usernames": [
-                    name.strip().lower()
-                    for name in os.getenv("RATE_LIMIT_EXEMPT_USERNAMES", "").split(",")
-                    if name.strip()
-                ],
                 "exempt_emails": [
                     e.strip().lower()
                     for e in os.getenv("RATE_LIMIT_EXEMPT_EMAILS", "").split(",")
                     if e.strip()
-                ],
-                "exempt_user_ids": [
-                    uid.strip() for uid in os.getenv("RATE_LIMIT_EXEMPT_USER_IDS", "").split(",") if uid.strip()
                 ],
                 "weekdays_only": os.getenv("RATE_LIMIT_WEEKDAYS_ONLY", "true").lower()
                 in ("true", "1", "yes"),
@@ -146,24 +132,11 @@ class Pipeline:
         return datetime.now().weekday() < 5
 
     def is_exempt(self, user: Optional[dict]) -> bool:
-        """Return True if the user is exempt (matched by username, email, or user id)."""
-        if not user:
+        """Return True if the user's email is in the exempt_emails list."""
+        if not user or not self.valves.exempt_emails:
             return False
-        if self.valves.exempt_usernames:
-            username = (user.get("username") or "").strip().lower()
-            if username in self.valves.exempt_usernames:
-                return True
-        if self.valves.exempt_emails:
-            email = (user.get("email") or "").strip().lower()
-            if email in self.valves.exempt_emails:
-                return True
-        if self.valves.exempt_user_ids:
-            uid = user.get("id")
-            if uid is not None:
-                uid_str = str(uid).strip()
-                if uid_str in self.valves.exempt_user_ids:
-                    return True
-        return False
+        email = (user.get("email") or "").strip().lower()
+        return email in self.valves.exempt_emails
 
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
         print(f"pipe:{__name__}")
@@ -172,7 +145,7 @@ class Pipeline:
 
         if user.get("role", "admin") == "user":
             user_id = user["id"] if user and "id" in user else "default_user"
-            # Skip rate limiting for exempt usernames; apply only on weekdays when weekdays_only is True
+            # Skip rate limiting for exempt emails; apply only on weekdays when weekdays_only is True
             if not self.is_exempt(user):
                 if not self.valves.weekdays_only or self.is_weekday():
                     if self.rate_limited(user_id):
