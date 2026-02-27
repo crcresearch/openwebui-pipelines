@@ -1,5 +1,6 @@
 import os
 from typing import List, Optional
+from datetime import datetime
 from pydantic import BaseModel
 from schemas import OpenAIChatMessage
 import time
@@ -21,6 +22,12 @@ class Pipeline:
         requests_per_hour: Optional[int] = None
         sliding_window_limit: Optional[int] = None
         sliding_window_minutes: Optional[int] = None
+
+        # Usernames that are exempt from rate limiting (e.g. admins, service accounts)
+        exempt_usernames: List[str] = []
+
+        # When True, rate limiting applies only on weekdays (Mon–Fri); when False, every day
+        weekdays_only: bool = True
 
     def __init__(self):
         # Pipeline filters are only compatible with Open WebUI
@@ -50,6 +57,13 @@ class Pipeline:
                 "sliding_window_minutes": int(
                     os.getenv("RATE_LIMIT_SLIDING_WINDOW_MINUTES", 15)
                 ),
+                "exempt_usernames": [
+                    name.strip().lower()
+                    for name in os.getenv("RATE_LIMIT_EXEMPT_USERNAMES", "").split(",")
+                    if name.strip()
+                ],
+                "weekdays_only": os.getenv("RATE_LIMIT_WEEKDAYS_ONLY", "true").lower()
+                in ("true", "1", "yes"),
             }
         )
 
@@ -113,6 +127,17 @@ class Pipeline:
 
         return False
 
+    def is_weekday(self) -> bool:
+        """Return True if today is a weekday (Monday=0 through Friday=4)."""
+        return datetime.now().weekday() < 5
+
+    def is_exempt(self, user: Optional[dict]) -> bool:
+        """Return True if the user is in the exempt_usernames list (rate limit does not apply)."""
+        if not user or not self.valves.exempt_usernames:
+            return False
+        username = (user.get("username") or "").strip().lower()
+        return username in self.valves.exempt_usernames
+
     async def inlet(self, body: dict, user: Optional[dict] = None) -> dict:
         print(f"pipe:{__name__}")
         print(body)
@@ -120,8 +145,10 @@ class Pipeline:
 
         if user.get("role", "admin") == "user":
             user_id = user["id"] if user and "id" in user else "default_user"
-            if self.rate_limited(user_id):
-                raise Exception("Rate limit exceeded. Please try again later.")
-
-            self.log_request(user_id)
+            # Skip rate limiting for exempt usernames; apply only on weekdays when weekdays_only is True
+            if not self.is_exempt(user):
+                if not self.valves.weekdays_only or self.is_weekday():
+                    if self.rate_limited(user_id):
+                        raise Exception("Rate limit exceeded. Please try again later.")
+                    self.log_request(user_id)
         return body
